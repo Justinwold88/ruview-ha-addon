@@ -1,0 +1,208 @@
+#!/bin/sh
+# Start RuView's sensing server from the app's options.
+#
+# Home Assistant writes the options to /data/options.json. This script turns
+# them into sensing-server flags and environment, finds the MQTT broker, and
+# execs the server. It never prints a secret (token or password).
+#
+# Environment (for tests):
+#   RUVIEW_OPTIONS_FILE  options file (default /data/options.json)
+#   RUVIEW_DATA_DIR      persistent data directory (default /data)
+#   RUVIEW_SERVER_BIN    server binary (default /app/sensing-server)
+#   RUVIEW_DRY_RUN=1     print the decision instead of starting the server
+#   SUPERVISOR_TOKEN     set by the Supervisor; enables broker discovery
+#   RUVIEW_SUPERVISOR_URL  Supervisor API base (default http://supervisor)
+set -eu
+
+OPTIONS="${RUVIEW_OPTIONS_FILE:-/data/options.json}"
+DATA_DIR="${RUVIEW_DATA_DIR:-/data}"
+SERVER="${RUVIEW_SERVER_BIN:-/app/sensing-server}"
+SUPERVISOR_URL="${RUVIEW_SUPERVISOR_URL:-http://supervisor}"
+
+log() { printf '[ruview] %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit 64; }
+
+[ -r "$OPTIONS" ] || die "cannot read options file $OPTIONS"
+jq -e 'type == "object"' "$OPTIONS" >/dev/null 2>&1 || die "$OPTIONS is not a JSON object"
+
+# String option, or nothing when unset, null or empty.
+opt() {
+    jq -r --arg k "$1" 'if (.[$k] // "") == "" then empty else .[$k] | tostring end' "$OPTIONS"
+}
+# Boolean option: true only for a JSON true.
+opt_true() {
+    [ "$(jq -r --arg k "$1" '.[$k] == true' "$OPTIONS")" = "true" ]
+}
+
+# ── Server basics ──────────────────────────────────────────────────────────
+source_opt="$(opt csi_source)"
+case "${source_opt:-esp32}" in
+    esp32) source=esp32 ;;
+    simulated) source=simulated ;;
+    *) die "csi_source must be esp32 or simulated, not '$source_opt'" ;;
+esac
+
+level="$(opt log_level)"
+case "${level:-info}" in
+    trace|debug|info|warn|error) RUST_LOG="$level" ;;
+    *) die "log_level must be trace, debug, info, warn or error" ;;
+esac
+export RUST_LOG="${RUST_LOG:-info}"
+
+set -- --source "$source" \
+    --http-port 3000 --ws-port 3001 --udp-port 5005 \
+    --ui-path /app/ui --tick-ms 100 \
+    --data-dir "$DATA_DIR" \
+    --no-edge-registry
+# --no-edge-registry: the edge app registry is RuView's only built-in online
+# lookup (it fetches a JSON index on request). The app doesn't use it, so it
+# makes no internet requests of its own.
+
+if [ "$source" = simulated ]; then
+    log "Signal source: SIMULATED. Readings are synthetic; do not automate on them."
+fi
+
+# ── Web UI and REST API exposure (RuView #864 / ADR-296) ───────────────────
+# The server refuses a network-reachable HTTP bind without auth. Without a
+# token or the explicit trusted-network opt-in, keep HTTP inside the app:
+# MQTT and CSI ingest work either way.
+token="$(opt api_token)"
+if [ -n "$token" ]; then
+    export RUVIEW_API_TOKEN="$token"
+    http_bind=0.0.0.0
+    http_mode="token"
+elif opt_true trusted_network; then
+    export RUVIEW_ALLOW_UNAUTHENTICATED=1
+    http_bind=0.0.0.0
+    http_mode="open (trusted network)"
+else
+    http_bind=127.0.0.1
+    http_mode="inside the app only"
+    log "Web UI and API: kept inside the app. Set api_token (recommended) or"
+    log "  trusted_network in the app's options to open them on your network."
+fi
+unset token
+set -- "$@" --bind-addr "$http_bind"
+
+# The server answers only to Host headers on its allow-list (DNS-rebinding
+# guard; loopback names are always on it). When HTTP is open, add the
+# addresses from the options and this host's name from the Supervisor.
+if [ "$http_bind" = 0.0.0.0 ]; then
+    hosts="$(jq -r '(.allowed_hosts // []) | map(tostring | select(length > 0)) | join(",")' "$OPTIONS")"
+    if [ -n "${SUPERVISOR_TOKEN:-}" ]; then
+        # /info needs no hassio_api; its hostname is the machine's name.
+        name="$(curl -fsS --max-time 10 -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+            "${SUPERVISOR_URL}/info" 2>/dev/null | jq -r '.data.hostname // empty' 2>/dev/null || true)"
+        case "$name" in
+            ''|*[!A-Za-z0-9-]*) ;;  # missing or not a plain host name: ignore
+            *) hosts="${hosts:+$hosts,}$name,$name.local" ;;
+        esac
+        unset name
+    fi
+    if [ -n "$hosts" ]; then
+        export SENSING_ALLOWED_HOSTS="$hosts"
+        log "Web UI answers at: $hosts (and localhost)"
+    else
+        log "Add the IP address you open Home Assistant at to allowed_hosts, or the"
+        log "  web UI will refuse it (421 Misdirected Request)."
+    fi
+fi
+
+# ── CSI ingest from ESP32 nodes (ADR-296 source guard) ─────────────────────
+udp_allow="$(jq -r '(.udp_allow // []) | map(tostring | select(length > 0)) | join(",")' "$OPTIONS")"
+udp_mode="loopback (no nodes heard)"
+if [ -n "$udp_allow" ]; then
+    # One flag per entry keeps each value a separate argument.
+    old_ifs="$IFS"; IFS=','
+    for cidr in $udp_allow; do
+        set -- "$@" --udp-allow "$cidr"
+    done
+    IFS="$old_ifs"
+    set -- "$@" --udp-bind 0.0.0.0
+    udp_mode="allow-list"
+fi
+if opt_true udp_insecure_lan; then
+    set -- "$@" --udp-insecure-lan
+    [ -n "$udp_allow" ] || set -- "$@" --udp-bind 0.0.0.0
+    udp_mode="any sender (insecure LAN)"
+    log "CSI ingest accepts frames from ANY sender on your network."
+fi
+if [ "$source" = esp32 ] && [ "$udp_mode" = "loopback (no nodes heard)" ]; then
+    log "No node addresses allowed yet, so no ESP32 node will be heard. Add your"
+    log "  nodes' addresses or subnet (for example 192.168.1.0/24) to udp_allow."
+fi
+
+# ── MQTT (Home Assistant discovery) ────────────────────────────────────────
+mqtt_mode="off"
+if opt_true mqtt; then
+    host="$(opt mqtt_host)"
+    port="$(opt mqtt_port)"
+    user="$(opt mqtt_username)"
+    pass="$(opt mqtt_password)"
+    tls=false
+    if [ -n "$host" ]; then
+        mqtt_mode="broker from options"
+    elif [ -n "${SUPERVISOR_TOKEN:-}" ]; then
+        # The Supervisor answers /services/mqtt for apps that declare
+        # `services: mqtt:want` (no hassio_api needed).
+        if service="$(curl -fsS --max-time 10 \
+                -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+                "${SUPERVISOR_URL}/services/mqtt" 2>/dev/null)" \
+            && host="$(printf '%s' "$service" | jq -r '.data.host // empty')" \
+            && [ -n "$host" ]; then
+            [ -n "$port" ] || port="$(printf '%s' "$service" | jq -r '.data.port // empty')"
+            [ -n "$user" ] || user="$(printf '%s' "$service" | jq -r '.data.username // empty')"
+            [ -n "$pass" ] || pass="$(printf '%s' "$service" | jq -r '.data.password // empty')"
+            tls="$(printf '%s' "$service" | jq -r '.data.ssl == true')"
+            mqtt_mode="broker from the Supervisor"
+        else
+            host=""
+        fi
+        unset service
+    fi
+    if [ -n "$host" ]; then
+        set -- "$@" --mqtt --mqtt-host "$host"
+        [ -z "$port" ] || set -- "$@" --mqtt-port "$port"
+        [ -z "$user" ] || set -- "$@" --mqtt-username "$user"
+        [ "$tls" != true ] || set -- "$@" --mqtt-tls
+        if [ -n "$pass" ]; then
+            # The server reads the password from this variable, so it never
+            # appears in the process list.
+            export MQTT_PASSWORD="$pass"
+        fi
+    else
+        mqtt_mode="off (no broker found)"
+        log "MQTT is on but no broker was found. Install the Mosquitto app, or"
+        log "  set mqtt_host in the app's options. Running without MQTT."
+    fi
+    unset pass
+fi
+
+# ── Outputs that stay opt-in ───────────────────────────────────────────────
+if opt_true privacy_mode; then
+    set -- "$@" --privacy-mode
+fi
+if opt_true publish_heart_rate; then
+    set -- "$@" --mqtt-publish-heart-rate
+    log "Heart rate is announced. It is NOT validated; never use it for health or safety."
+fi
+if opt_true publish_fall; then
+    set -- "$@" --mqtt-publish-fall
+    log "Fall detection is announced. It is NOT validated; do not rely on it."
+fi
+
+log "Starting RuView: source=$source, web UI/API=$http_mode, nodes=$udp_mode, MQTT=$mqtt_mode"
+
+if [ "${RUVIEW_DRY_RUN:-}" = 1 ]; then
+    # Secrets are reported as set/unset only.
+    printf 'SERVER=%s\n' "$SERVER"
+    for arg in "$@"; do printf 'ARG=%s\n' "$arg"; done
+    printf 'ENV RUST_LOG=%s\n' "$RUST_LOG"
+    printf 'ENV RUVIEW_API_TOKEN=%s\n' "$([ -n "${RUVIEW_API_TOKEN:-}" ] && echo set || echo unset)"
+    printf 'ENV RUVIEW_ALLOW_UNAUTHENTICATED=%s\n' "${RUVIEW_ALLOW_UNAUTHENTICATED:-unset}"
+    printf 'ENV MQTT_PASSWORD=%s\n' "$([ -n "${MQTT_PASSWORD:-}" ] && echo set || echo unset)"
+    printf 'ENV SENSING_ALLOWED_HOSTS=%s\n' "${SENSING_ALLOWED_HOSTS:-unset}"
+    exit 0
+fi
+
+exec "$SERVER" "$@"

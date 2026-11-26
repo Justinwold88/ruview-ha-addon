@@ -1,0 +1,63 @@
+name: CI
+
+# Fast checks on every pull request and push: the app manifest lint, the
+# version/changelog match, ShellCheck, and the start-script tests.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    name: Lint app manifest
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Home Assistant app linter
+        uses: frenck/action-addon-linter@d51677290aef26cdfc835271dd3c7343ce502809 # v2.21.2
+        with:
+          path: ./ruview
+      - name: Version, changelog and pinned commit agree
+        run: |
+          set -euo pipefail
+          version="$(yq -r '.version' ruview/config.yaml)"
+          echo "version: $version"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "::error file=ruview/config.yaml::version must be MAJOR.MINOR.PATCH"; exit 1; }
+          grep -qxF "## $version" ruview/CHANGELOG.md \
+            || { echo "::error file=ruview/CHANGELOG.md::no '## $version' section"; exit 1; }
+          commit="$(tr -d '[:space:]' < ruview/RUVIEW_COMMIT)"
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error file=ruview/RUVIEW_COMMIT::must be a full 40-character commit hash"; exit 1; }
+          image="$(yq -r '.image' ruview/config.yaml)"
+          [ "$image" = "ghcr.io/justinwold88/ruview-addon" ] \
+            || { echo "::error file=ruview/config.yaml::image must match the one CI publishes"; exit 1; }
+
+  scripts:
+    name: Scripts
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: ShellCheck
+        run: |
+          shellcheck --version | head -2
+          shellcheck -s sh ruview/rootfs/usr/local/bin/ruview-run scripts/fetch-ruview.sh
+          shellcheck tests/run_options_test.sh tests/smoke_test.sh
+      - name: Start-script tests (dash, as in the image)
+        run: |
+          sudo apt-get install -y --no-install-recommends dash >/dev/null
+          test "$(readlink -f /bin/sh)" = /usr/bin/dash
+          tests/run_options_test.sh
