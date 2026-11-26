@@ -15,8 +15,6 @@ arch:
 # a Home Assistant host.
 image: ghcr.io/justinwold88/ruview-addon
 stage: experimental
-startup: application
-boot: auto
 # Reads the MQTT broker (for example the Mosquitto app) from the Supervisor
 # when one is installed. Works without one if you set a broker below or
 # turn MQTT off.
