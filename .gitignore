@@ -1,0 +1,17 @@
+# RuView source checked out by CI (and by `scripts/fetch-ruview.sh`) for image builds
+/ruview-src/
+
+# Local test output
+/.test-out/
+
+# Editors and OS files
+.DS_Store
+*.swp
+.vscode/
+.idea/
+
+# Never commit credentials or local Home Assistant data
+.env
+*.env
+options.json
+!tests/fixtures/*.json
