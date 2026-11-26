@@ -6,7 +6,8 @@
 # Starts the image the way the Supervisor does (options in /data, init, the
 # Supervisor's /services/mqtt answered by a stand-in) next to a real
 # Mosquitto broker, then checks:
-#   1. token mode: /health, 401 without the token, 200 with it, the UI,
+#   1. token mode: /health, 401 without the token, 200 with it, the UI, the
+#      Host allow-list (an allowed IP and the Supervisor host name in, others 421),
 #      MQTT discovery (presence, and link score as a diagnostic), persisted
 #      state, no secret in the log, clean stop;
 #   2. default mode: HTTP stays inside the container;
@@ -53,6 +54,7 @@ jq -n --arg p "$mqtt_pass" \
     '{result: "ok", data: {host: "broker", port: 1883, ssl: false,
       protocol: "3.1.1", username: "addons", password: $p}}' \
     > "$work/www/services/mqtt"
+jq -n '{result: "ok", data: {hostname: "homeassistant"}}' > "$work/www/info"
 chmod -R a+rX "$work/www"
 run_bg supervisor --network "$net" -v "$work/www:/www:ro" busybox:1.36 \
     httpd -f -p 80 -h /www
@@ -64,7 +66,7 @@ wait_for 30 docker run --rm --network "$net" busybox:1.36 \
 step "Token mode"
 mkdir -p "$work/data1"
 jq -n --arg t "$token" '{csi_source: "simulated", udp_allow: ["172.16.0.0/12"],
-    udp_insecure_lan: false, mqtt: true, trusted_network: false,
+    udp_insecure_lan: false, mqtt: true, allowed_hosts: ["192.168.1.50"], trusted_network: false,
     privacy_mode: false, publish_heart_rate: false, publish_fall: false,
     log_level: "info", api_token: $t}' > "$work/data1/options.json"
 chmod -R a+rwX "$work/data1"
@@ -89,6 +91,16 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer wrong' \
 [ "$code" = 401 ] || fail "API with a wrong token returned $code, expected 401"
 curl -fsS http://127.0.0.1:3000/ui/index.html >/dev/null || fail "UI not served"
 echo "auth and UI: ok"
+
+step "Host allow-list (DNS-rebinding guard)"
+host_code() {
+    curl -s -o /dev/null -w '%{http_code}' -H "Host: $1" \
+        -H "Authorization: Bearer $token" http://127.0.0.1:3000/api/v1/info
+}
+[ "$(host_code 192.168.1.50:3000)" = 200 ] || fail "the allowed IP was refused"
+[ "$(host_code homeassistant.local:3000)" = 200 ] || fail "the Supervisor host name was refused"
+[ "$(host_code evil.example:3000)" = 421 ] || fail "a foreign Host was not refused with 421"
+echo "allowed IP and host name accepted, foreign Host refused: ok"
 
 step "MQTT discovery"
 discovered() { docker logs sub 2>&1 | grep -q "$1"; }
@@ -120,7 +132,7 @@ echo "stopped in $((SECONDS - start)) s"
 step "Default mode"
 mkdir -p "$work/data2"
 jq -n '{csi_source: "simulated", udp_allow: [], udp_insecure_lan: false,
-    mqtt: false, trusted_network: false, privacy_mode: false,
+    mqtt: false, allowed_hosts: [], trusted_network: false, privacy_mode: false,
     publish_heart_rate: false, publish_fall: false, log_level: "info"}' \
     > "$work/data2/options.json"
 chmod -R a+rwX "$work/data2"

@@ -37,6 +37,13 @@ configuration:
       Opens the web UI and REST API on your network, protected by this token
       (enter it in the UI's settings). Without a token or the option below,
       the UI and API stay inside the app and only MQTT is available.
+  allowed_hosts:
+    name: Web UI addresses
+    description: >-
+      The IP address or host name you open the web UI at, for example
+      192.168.1.10 (no port). Your Home Assistant host name and its .local
+      name are added automatically. RuView refuses other addresses to block
+      DNS-rebinding attacks.
   trusted_network:
     name: Open the web UI without a token
     description: >-

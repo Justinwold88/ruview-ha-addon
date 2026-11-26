@@ -32,6 +32,7 @@ options:
   udp_allow: []
   udp_insecure_lan: false
   mqtt: true
+  allowed_hosts: []
   trusted_network: false
   privacy_mode: false
   publish_heart_rate: false
@@ -50,6 +51,10 @@ schema:
   mqtt_username: "str?"
   mqtt_password: "password?"
   api_token: "password?"
+  # Host names or IP addresses you open the web UI at (RuView rejects other
+  # Host headers to block DNS rebinding). No port, no scheme.
+  allowed_hosts:
+    - 'match(^[A-Za-z0-9.:\[\]-]{1,253}$)'
   trusted_network: bool
   privacy_mode: bool
   publish_heart_rate: bool

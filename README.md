@@ -65,6 +65,7 @@ ESP32-S3 nodes ──UDP 5005 (CSI)──▶ RuView app ──MQTT discovery─�
 | Surface | Default | To open it |
 |---|---|---|
 | Web UI and REST API | Inside the app only | Set a token, or mark the network as trusted |
+| Web UI addresses | Host name only (DNS-rebinding guard) | List the IP address you use |
 | CSI from nodes | Nobody heard | List your nodes' addresses (or accept any sender) |
 | Heart rate, fall detection | Not announced | Opt in; both are unvalidated |
 | Internet | No requests from the app | — |

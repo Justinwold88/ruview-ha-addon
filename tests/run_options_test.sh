@@ -35,11 +35,15 @@ for a in "$@"; do
 done
 [ "${FAKE_SERVICE_FAIL:-0}" = 1 ] && exit 22
 [ "$auth" = "Authorization: Bearer test-supervisor-token" ] || exit 22
-case "$url" in */services/mqtt) cat "$FAKE_SERVICE" ;; *) exit 22 ;; esac
+case "$url" in
+    */services/mqtt) cat "$FAKE_SERVICE" ;;
+    */info) [ -f "$FAKE_INFO" ] && cat "$FAKE_INFO" || exit 22 ;;
+    *) exit 22 ;;
+esac
 EOF
 chmod +x "$work/bin/curl"
 
-defaults='{"csi_source":"esp32","udp_allow":[],"udp_insecure_lan":false,"mqtt":true,
+defaults='{"csi_source":"esp32","udp_allow":[],"udp_insecure_lan":false,"mqtt":true,"allowed_hosts":[],
 "trusted_network":false,"privacy_mode":false,"publish_heart_rate":false,
 "publish_fall":false,"log_level":"info"}'
 
@@ -55,7 +59,7 @@ run_case() {
     env -i PATH="$work/bin:/usr/bin:/bin" \
         RUVIEW_OPTIONS_FILE="$work/options.json" RUVIEW_DATA_DIR=/data \
         RUVIEW_DRY_RUN=1 FAKE_CURL_LOG="$work/curl.log" \
-        FAKE_SERVICE="$work/service.json" "$@" \
+        FAKE_SERVICE="$work/service.json" FAKE_INFO="$work/info.json" "$@" \
         sh "$script" > "$work/out" 2> "$work/err" || rc=$?
     out="$(cat "$work/out")"
     err="$(cat "$work/err")"
@@ -105,6 +109,30 @@ has "ARG=10.0.0.5"
 [ "$(args_after --udp-bind)" = 0.0.0.0 ] && ok || bad "UDP bind with allow-list"
 lacks "ARG=--udp-insecure-lan"
 never "s3cret-token-value"
+
+# ── Web UI addresses: from the options, plus the Supervisor's host name ───
+run_case "allowed hosts from options" '{"api_token":"t","allowed_hosts":["192.168.1.10","ha.lan"]}'
+has "ENV SENSING_ALLOWED_HOSTS=192.168.1.10,ha.lan"
+says "Web UI answers at: 192.168.1.10,ha.lan"
+
+printf '%s' '{"result":"ok","data":{"hostname":"homeassistant","machine":"qemux86-64"}}' > "$work/info.json"
+run_case "host name from the Supervisor" '{"api_token":"t","allowed_hosts":["192.168.1.10"],"mqtt":false}' \
+    SUPERVISOR_TOKEN=test-supervisor-token
+has "ENV SENSING_ALLOWED_HOSTS=192.168.1.10,homeassistant,homeassistant.local"
+[ "$(curl_calls)" = 1 ] && ok || bad "one /info call"
+
+printf '%s' '{"result":"ok","data":{"hostname":"bad host;rm -rf"}}' > "$work/info.json"
+run_case "odd host name ignored" '{"api_token":"t","mqtt":false}' SUPERVISOR_TOKEN=test-supervisor-token
+has "ENV SENSING_ALLOWED_HOSTS=unset"
+says "Add the IP address you open Home Assistant at"
+rm -f "$work/info.json"
+
+run_case "no /info answer" '{"api_token":"t","allowed_hosts":["192.168.1.10"],"mqtt":false}' \
+    SUPERVISOR_TOKEN=test-supervisor-token
+has "ENV SENSING_ALLOWED_HOSTS=192.168.1.10"
+
+run_case "HTTP closed: no host list" '{"allowed_hosts":["192.168.1.10"]}' SUPERVISOR_TOKEN=test-supervisor-token FAKE_SERVICE_FAIL=1
+has "ENV SENSING_ALLOWED_HOSTS=unset"
 
 # ── Trusted network: open HTTP without a token ────────────────────────────
 run_case "trusted network" '{"trusted_network":true}'

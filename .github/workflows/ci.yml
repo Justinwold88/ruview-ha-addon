@@ -25,7 +25,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Home Assistant app linter
-        uses: frenck/action-addon-linter@b2b6bec48be7f7058328f8b6684c17018715885e # v2.9.0
+        uses: frenck/action-addon-linter@d51677290aef26cdfc835271dd3c7343ce502809 # v2.21.2
         with:
           path: ./ruview
       - name: Version, changelog and pinned commit agree

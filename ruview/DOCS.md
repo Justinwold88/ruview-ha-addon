@@ -52,6 +52,7 @@ lists each sensor and when it is available.
 | Publish to Home Assistant over MQTT | on | Announces the sensors with MQTT discovery. |
 | MQTT broker host, port, username, password | empty | Only needed for a broker other than the Mosquitto app. Leave the host empty to use the Supervisor's broker. |
 | Web UI and API token | empty | Opens RuView's web UI and REST API on your network, protected by this token. Use a long random value. |
+| Web UI addresses | empty | The IP address you open the web UI at, for example `192.168.1.10`. Your host name and its `.local` name are added for you. |
 | Open the web UI without a token | off | Opens the UI and API to anyone who can reach the host. Only on a network you fully trust. |
 | Privacy mode | off | Removes heart rate, breathing rate and pose from every output. |
 | Announce heart rate | off | Unvalidated: it scores at chance in RuView's synthetic tests. |
@@ -65,10 +66,15 @@ stay inside the app. MQTT and your nodes still work, but **Open Web UI** will
 not load. This matches RuView's own rule: it refuses to serve live sensing data
 on a network without authentication.
 
-To open them, set **Web UI and API token**. Then open the web UI and enter the
-same token in its settings panel (the "Bearer token" field). Keep ports 3000
-and 3001 as they are: the UI finds its live stream on the port after the web
-port.
+To open them, set **Web UI and API token**. If you open Home Assistant by IP
+address, add that address to **Web UI addresses**. RuView answers only to
+addresses on its list, which blocks DNS-rebinding attacks from other websites;
+any other address gets `421 Misdirected Request`. Your Home Assistant host name
+(`homeassistant`, `homeassistant.local`) is on the list automatically.
+
+Then open the web UI and enter the same token in its settings panel (the
+"Bearer token" field). Keep ports 3000 and 3001 as they are: the UI finds its
+live stream on the port after the web port.
 
 ## Calibrate each room
 
@@ -135,6 +141,8 @@ messages go only to your broker.
   to your Home Assistant host's IP on UDP 5005.
 - **Every room always reads occupied:** calibrate each room (above).
 - **Open Web UI doesn't load:** set a token (see Web UI and API).
+- **The web UI says `421 Misdirected Request`:** add the address in your
+  browser's address bar (without `http://` or the port) to Web UI addresses.
 
 ## Support
 
