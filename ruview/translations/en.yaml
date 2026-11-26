@@ -1,0 +1,66 @@
+configuration:
+  csi_source:
+    name: Signal source
+    description: >-
+      esp32 listens for CSI from your RuView nodes on UDP port 5005.
+      simulated generates synthetic data for trying the app without boards;
+      its presence readings are not real, so don't automate on them.
+  udp_allow:
+    name: Allowed node addresses
+    description: >-
+      Addresses or CIDR blocks your ESP32 nodes send from, for example
+      192.168.1.0/24 or 192.168.1.50. Frames from anywhere else are dropped.
+      Nodes are only heard once this list (or the option below) is set.
+  udp_insecure_lan:
+    name: Accept nodes from any address
+    description: >-
+      Accept CSI frames from any sender instead of the list above. Anyone on
+      your network could then feed fake sensing data. Prefer the list.
+  mqtt:
+    name: Publish to Home Assistant over MQTT
+    description: >-
+      Announces RuView's sensors with MQTT discovery. Uses the Mosquitto app
+      automatically when it is installed, unless a broker is set below.
+  mqtt_host:
+    name: MQTT broker host (optional)
+    description: Leave empty to use the broker the Supervisor provides.
+  mqtt_port:
+    name: MQTT broker port (optional)
+    description: Defaults to 1883, or the port the Supervisor provides.
+  mqtt_username:
+    name: MQTT username (optional)
+  mqtt_password:
+    name: MQTT password (optional)
+  api_token:
+    name: Web UI and API token (optional)
+    description: >-
+      Opens the web UI and REST API on your network, protected by this token
+      (enter it in the UI's settings). Without a token or the option below,
+      the UI and API stay inside the app and only MQTT is available.
+  trusted_network:
+    name: Open the web UI without a token
+    description: >-
+      Serves the UI and API to anyone who can reach this host, with no
+      token. Only safe on a network you fully trust.
+  privacy_mode:
+    name: Privacy mode
+    description: >-
+      Strips heart rate, breathing rate and pose from every output, and
+      never announces them to Home Assistant.
+  publish_heart_rate:
+    name: Announce heart rate (unvalidated)
+    description: >-
+      Heart rate from single-antenna Wi-Fi has not been validated and scores
+      at chance in RuView's synthetic tests. Never use it for health or
+      safety decisions.
+  publish_fall:
+    name: Announce fall detection (unvalidated)
+    description: >-
+      The fall detector has not been validated. Do not rely on it to detect
+      a fall.
+  log_level:
+    name: Log level
+network:
+  3000/tcp: Web UI and REST API (open only with a token or trusted network)
+  3001/tcp: Live sensing stream used by the web UI
+  5005/udp: CSI frames from your ESP32 nodes

@@ -1,0 +1,14 @@
+# Allow-list: send only what ruview/Dockerfile copies. RuView's vendored
+# crates are large (vendor/ruvector alone is ~390 MB with tests and assets).
+*
+!ruview/rootfs/
+!ruview-src/v2/Cargo.toml
+!ruview-src/v2/Cargo.lock
+!ruview-src/v2/crates/
+!ruview-src/v2/vendor/security/
+!ruview-src/vendor/ruvector/
+!ruview-src/vendor/rufield/
+!ruview-src/ui/
+**/.git
+**/target
+**/node_modules
